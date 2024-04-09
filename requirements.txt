@@ -1,0 +1,12 @@
+torch
+torchtext
+transformers
+pandas
+tqdm
+plotly
+numpy
+scipy
+jupyter
+tensorboard
+evaluate
+accelerate
