@@ -14,7 +14,7 @@ class Tensor:
 
     def __init__(
         self,
-        value: Union[np.array, int, float],
+        value: Union[np.ndarray, int, float],
         prev: Tuple["Tensor"] = (),
         name: str = None,
     ):
@@ -25,29 +25,29 @@ class Tensor:
         self._prev = set(prev)
 
     def zero_grad(self):
-        if type(self.value) == np.ndarray:
+        if isinstance(self.value, np.ndarray):
             self.grad = np.zeros_like(self.value)
 
     def accumulate_grad(self, grad):
-        if type(self.value) == np.ndarray:
+        if isinstance(self.value, np.ndarray):
             # Assume that the values were broadcastable here, since a
             # forward pass is typically run before the backward pass.
             broadcast_axes = []
-            print(self.name)
-            print(grad.shape, self.value.shape)
-            for i in range(len(grad.shape)):
-                if grad.shape[i] > 1 and self.value.shape[i] == 1:
+            for i, (g, v) in enumerate(zip(grad.shape, self.value.shape)):
+                # TODO this doesn't support all broadcasts
+                if g != v:
                     broadcast_axes.append(i)
-            for axis in broadcast_axes:
-                grad = np.sum(grad, axis=axis, keepdims=True)
+            if len(broadcast_axes) > 0:
+                grad = np.sum(grad, axis=tuple(broadcast_axes), keepdims=True)
             self.grad += grad
 
     def backward(self):
+        self.grad = np.ones_like(self.value)
         self._backward()
         seen = set()
         fringe = list(self._prev)
         for node in fringe:
-            # Backprop must be breadth first.
+            # Backprop must be in topological order, aka breadth first.
             if node not in seen:
                 seen.add(node)
                 fringe.extend(node._prev)
@@ -66,6 +66,10 @@ class Tensor:
 
     def __mul__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other)
+        if isinstance(self.value, np.ndarray) and isinstance(other.value, np.ndarray):
+            # This allows the accumulation of grads through broadcasts to be handled
+            # a little more easily.
+            assert len(self.value.shape) == len(other.value.shape)
         out = Tensor(self.value * other.value, (self, other))
 
         def _backward():
@@ -125,6 +129,16 @@ class Tensor:
         out._backward = _backward
         return out
 
+    def sum(self, axis=0):
+        out = Tensor(np.sum(self.value, axis=axis, keepdims=True), (self,))
+        axis_dim = self.value.shape[axis]
+
+        def _backward():
+            self.grad += np.repeat(out.grad, axis_dim, axis=axis)
+
+        out._backward = _backward
+        return out
+
     def __neg__(self):
         return self * -1
 
@@ -152,12 +166,15 @@ class Tensor:
 
 class Module(abc.ABC):
     def __init__(self):
-        self._parameters = []
+        self._parameters = set()
 
     def __setattr__(self, name: str, value: Any) -> None:
-        if type(value) == Tensor:
-            self._parameters.append(value)
+        if isinstance(value, Tensor):
+            self._parameters.add(value)
+            # TODO: this doesn't work for shared embeddings.
             value.name = name
+        if isinstance(value, Module):
+            self._parameters.update(value.parameters())
         object.__setattr__(self, name, value)
 
     def parameters(self):
@@ -174,8 +191,8 @@ class Module(abc.ABC):
 class Linear(Module):
     def __init__(self, d_in, d_out):
         super().__init__()
-        self.W = Tensor(np.random.rand(d_in, d_out))
-        self.b = Tensor(np.random.rand(d_out))
+        self.W = Tensor(np.random.rand(d_in, d_out) / (d_in * d_out))
+        self.b = Tensor(np.random.rand(1, d_out) / d_out)
 
     def forward(self, x):
         return x.dot(self.W) + self.b
@@ -189,13 +206,14 @@ class MLP(Module):
 
     def forward(self, x):
         x = self.linear1.forward(x).relu()
-        x = self.linear2.forward(x).relu()
+        x = self.linear2.forward(x)
         return softmax(x)
 
 
 def softmax(x):
     exps = (x - np.max(x.value, axis=1, keepdims=True)).exp()
-    return exps / np.sum(exps.value)
+    # TODO grads not calculated right here.
+    return exps / exps.sum(axis=1)
 
 
 # Loss
@@ -215,8 +233,8 @@ class DataLoader:
 
 
 class Optimizer(abc.ABC):
-    def __init__(self):
-        raise NotImplementedError()
+    def __init__(self, parameters):
+        self.parameters = parameters
 
     def step(self):
         raise NotImplementedError()
@@ -228,7 +246,7 @@ class Optimizer(abc.ABC):
 
 class SGD(Optimizer):
     def __init__(self, parameters, lr=0.01):
-        self.parameters = parameters
+        super().__init__(parameters)
         self.lr = lr
 
     def step(self):
