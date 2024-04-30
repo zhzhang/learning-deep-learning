@@ -18,11 +18,13 @@ class Tensor:
         prev: Tuple["Tensor"] = (),
         name: str = None,
     ):
+        if isinstance(value, list):
+            value = np.array(value)
         self.value = value
         self.zero_grad()
         self.name = name
         self._backward = lambda: None
-        self._prev = set(prev)
+        self._prev = prev
 
     def zero_grad(self):
         if isinstance(self.value, np.ndarray):
@@ -42,20 +44,26 @@ class Tensor:
             self.grad += grad
 
     def backward(self):
-        self.grad = np.ones_like(self.value)
-        self._backward()
+        # Backprop must be in topological order, aka breadth first.
         seen = set()
-        fringe = list(self._prev)
-        for node in fringe:
-            # Backprop must be in topological order, aka breadth first.
+        ordered_nodes = []
+
+        def traverse(node):
             if node not in seen:
                 seen.add(node)
-                fringe.extend(node._prev)
-                node._backward()
+                for prev_node in node._prev:
+                    traverse(prev_node)
+                ordered_nodes.append(node)
+
+        traverse(self)
+
+        self.grad = np.ones_like(self.value)
+        for node in reversed(ordered_nodes):
+            node._backward()
 
     def __add__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.value + other.value, (self, other))
+        other = other if isinstance(other, Tensor) else Tensor(other, name="constant")
+        out = Tensor(self.value + other.value, (self, other), name="add")
 
         def _backward():
             self.accumulate_grad(out.grad)
@@ -65,12 +73,12 @@ class Tensor:
         return out
 
     def __mul__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(other)
+        other = other if isinstance(other, Tensor) else Tensor(other, name="constant")
         if isinstance(self.value, np.ndarray) and isinstance(other.value, np.ndarray):
             # This allows the accumulation of grads through broadcasts to be handled
             # a little more easily.
             assert len(self.value.shape) == len(other.value.shape)
-        out = Tensor(self.value * other.value, (self, other))
+        out = Tensor(self.value * other.value, (self, other), name="mul")
 
         def _backward():
             self.accumulate_grad(out.grad * other.value)
@@ -79,8 +87,8 @@ class Tensor:
         out._backward = _backward
         return out
 
-    def __pow__(self, pow):
-        out = Tensor(self.value**pow, (self,))
+    def __pow__(self, pow: Union[int, float]):
+        out = Tensor(self.value**pow, (self,), name="pow")
 
         def _backward():
             self.accumulate_grad(out.grad * pow * self.value ** (pow - 1))
@@ -89,7 +97,7 @@ class Tensor:
         return out
 
     def exp(self):
-        out = Tensor(np.exp(self.value), (self,))
+        out = Tensor(np.exp(self.value), (self,), name="exp")
 
         def _backward():
             self.accumulate_grad(out.grad * out.value)
@@ -99,7 +107,7 @@ class Tensor:
         return out
 
     def log(self):
-        out = Tensor(np.log(self.value), (self,))
+        out = Tensor(np.log(self.value), (self,), name="log")
 
         def _backward():
             self.accumulate_grad(out.grad / self.value)
@@ -107,21 +115,21 @@ class Tensor:
         out._backward = _backward
         return out
 
-    def dot(self, other):
+    def matmul(self, other):
         # Self A x B, other B x C, out A x C
-        out = Tensor(np.dot(self.value, other.value), (self, other))
+        out = Tensor(np.matmul(self.value, other.value), (self, other), name="matmul")
 
         def _backward():
             # self.grad A x B = (out) A x C * (other.T) C x B
-            self.accumulate_grad(np.dot(out.grad, other.value.T))
+            self.accumulate_grad(np.matmul(out.grad, other.value.T))
             # other.grad B x C = (self.T) B x A * (out) A x C
-            other.accumulate_grad(np.dot(self.value.T, out.grad))
+            other.accumulate_grad(np.matmul(self.value.T, out.grad))
 
         out._backward = _backward
         return out
 
     def relu(self):
-        out = Tensor(np.maximum(0, self.value), (self,))
+        out = Tensor(np.maximum(0, self.value), (self,), name="relu")
 
         def _backward():
             self.accumulate_grad(out.grad * (self.value > 0))
@@ -130,11 +138,11 @@ class Tensor:
         return out
 
     def sum(self, axis=0):
-        out = Tensor(np.sum(self.value, axis=axis, keepdims=True), (self,))
+        out = Tensor(np.sum(self.value, axis=axis, keepdims=True), (self,), name="sum")
         axis_dim = self.value.shape[axis]
 
         def _backward():
-            self.grad += np.repeat(out.grad, axis_dim, axis=axis)
+            self.accumulate_grad(np.repeat(out.grad, axis_dim, axis=axis))
 
         out._backward = _backward
         return out
@@ -161,12 +169,13 @@ class Tensor:
         return other * self**-1
 
     def __repr__(self):
-        return f"Tensor({self.name}: {self.value})"
+        return f"Tensor({self.name}: {self.value}, {self.value.shape if isinstance(self.value, np.ndarray) else 1})"
 
 
 class Module(abc.ABC):
     def __init__(self):
         self._parameters = set()
+        self.name = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         if isinstance(value, Tensor):
@@ -174,7 +183,11 @@ class Module(abc.ABC):
             # TODO: this doesn't work for shared embeddings.
             value.name = name
         if isinstance(value, Module):
-            self._parameters.update(value.parameters())
+            value.name = name
+            params = value.parameters()
+            for p in params:
+                p.name = f"{name} {p.name}"
+            self._parameters.update(params)
         object.__setattr__(self, name, value)
 
     def parameters(self):
@@ -195,7 +208,7 @@ class Linear(Module):
         self.b = Tensor(np.random.rand(1, d_out) / d_out)
 
     def forward(self, x):
-        return x.dot(self.W) + self.b
+        return x.matmul(self.W) + self.b
 
 
 class MLP(Module):
@@ -225,6 +238,7 @@ class DataLoader:
     def __init__(self, data, batch_size=64):
         self.data = data
         self.batch_size = batch_size
+        self.index = 0
 
     def __iter__(self):
         for i in range(0, len(self.data), self.batch_size):
