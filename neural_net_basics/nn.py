@@ -23,7 +23,7 @@ class Tensor:
         self.value = value
         self.zero_grad()
         self.name = name
-        self._backward = lambda: None
+        self._backprop = lambda: None
         self._prev = prev
 
     def zero_grad(self):
@@ -44,7 +44,7 @@ class Tensor:
             self.grad += grad
 
     def backward(self):
-        # Backprop must be in topological order, aka breadth first.
+        # Backprop must be in topological order.
         seen = set()
         ordered_nodes = []
 
@@ -59,17 +59,17 @@ class Tensor:
 
         self.grad = np.ones_like(self.value)
         for node in reversed(ordered_nodes):
-            node._backward()
+            node._backprop()
 
     def __add__(self, other):
         other = other if isinstance(other, Tensor) else Tensor(other, name="constant")
         out = Tensor(self.value + other.value, (self, other), name="add")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad)
             other.accumulate_grad(out.grad)
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def __mul__(self, other):
@@ -80,71 +80,71 @@ class Tensor:
             assert len(self.value.shape) == len(other.value.shape)
         out = Tensor(self.value * other.value, (self, other), name="mul")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad * other.value)
             other.accumulate_grad(out.grad * self.value)
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def __pow__(self, pow: Union[int, float]):
         out = Tensor(self.value**pow, (self,), name="pow")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad * pow * self.value ** (pow - 1))
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def exp(self):
         out = Tensor(np.exp(self.value), (self,), name="exp")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad * out.value)
 
-        out._backward = _backward
+        out._backprop = _backprop
 
         return out
 
     def log(self):
         out = Tensor(np.log(self.value), (self,), name="log")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad / self.value)
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def matmul(self, other):
         # Self A x B, other B x C, out A x C
         out = Tensor(np.matmul(self.value, other.value), (self, other), name="matmul")
 
-        def _backward():
+        def _backprop():
             # self.grad A x B = (out) A x C * (other.T) C x B
             self.accumulate_grad(np.matmul(out.grad, other.value.T))
             # other.grad B x C = (self.T) B x A * (out) A x C
             other.accumulate_grad(np.matmul(self.value.T, out.grad))
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def relu(self):
         out = Tensor(np.maximum(0, self.value), (self,), name="relu")
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(out.grad * (self.value > 0))
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def sum(self, axis=0):
         out = Tensor(np.sum(self.value, axis=axis, keepdims=True), (self,), name="sum")
         axis_dim = self.value.shape[axis]
 
-        def _backward():
+        def _backprop():
             self.accumulate_grad(np.repeat(out.grad, axis_dim, axis=axis))
 
-        out._backward = _backward
+        out._backprop = _backprop
         return out
 
     def __neg__(self):
@@ -170,6 +170,10 @@ class Tensor:
 
     def __repr__(self):
         return f"Tensor({self.name}: {self.value}, {self.value.shape if isinstance(self.value, np.ndarray) else 1})"
+
+    @classmethod
+    def random(cls, *shape):
+        return cls(np.random.random(shape))
 
 
 class Module(abc.ABC):

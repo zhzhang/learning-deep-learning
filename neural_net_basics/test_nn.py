@@ -7,7 +7,7 @@ def test_tensor_init():
     # numpy input
     x = nn.Tensor(np.ones([2, 3, 4]))
     assert np.array_equal(x.grad, np.zeros([2, 3, 4]))
-    assert x._backward() is None
+    assert x._backprop() is None
     assert len(x._prev) == 0
     # list init
     x = nn.Tensor([[1, 2, 3], [4, 5, 6]])
@@ -87,10 +87,6 @@ def test_rmul():
     helper_test_binary_op("__rmul__")
 
 
-def test_log():
-    helper_test_unary_op("log")
-
-
 def test_truediv():
     helper_test_binary_op("__truediv__")
 
@@ -123,6 +119,20 @@ def test_log():
     assert np.allclose(apt.grad.numpy(), at.grad, rtol=1e-15, atol=1e-20)
 
 
+def test_sum():
+    a = np.random.random([2, 3, 4])
+    at = nn.Tensor(a)
+    st = at.sum(axis=0)
+    st.backward()
+    assert np.allclose(
+        st.value, np.sum(a, axis=0, keepdims=True), rtol=1e-15, atol=1e-20
+    )
+    apt = torch.tensor(a, requires_grad=True)
+    spt = apt.sum(axis=0, keepdim=True)
+    spt.sum().backward()
+    assert np.allclose(apt.grad.numpy(), at.grad, rtol=1e-15, atol=1e-20)
+
+
 def test_matmul():
     a = np.random.random([2, 12])
     b = np.random.random([12, 2])
@@ -150,3 +160,24 @@ def test_relu():
     spt = torch.relu(apt)
     spt.sum().backward()
     assert np.array_equal(apt.grad.numpy(), at.grad)
+
+
+def test_backwards():
+    # Create a forked dag.
+    a = nn.Tensor.random(2, 3, 4)
+    b = nn.Tensor.random(1, 3, 4)
+    c = a * b
+    d = nn.Tensor.random(2, 3, 4)
+    e = (a + d) * b
+    f = c + e + a
+    f.backward()
+    apt = torch.tensor(a.value, requires_grad=True)
+    bpt = torch.tensor(b.value, requires_grad=True)
+    cpt = apt * bpt
+    dpt = torch.tensor(d.value, requires_grad=True)
+    ept = (apt + dpt) * bpt
+    fpt = cpt + ept + apt
+    fpt.sum().backward()
+    assert np.allclose(apt.grad.numpy(), a.grad, rtol=1e-15, atol=1e-20)
+    assert np.allclose(bpt.grad.numpy(), b.grad, rtol=1e-15, atol=1e-20)
+    assert np.allclose(dpt.grad.numpy(), d.grad, rtol=1e-15, atol=1e-20)
