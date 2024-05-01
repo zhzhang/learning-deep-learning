@@ -181,3 +181,29 @@ def test_backwards():
     assert np.allclose(apt.grad.numpy(), a.grad, rtol=1e-15, atol=1e-20)
     assert np.allclose(bpt.grad.numpy(), b.grad, rtol=1e-15, atol=1e-20)
     assert np.allclose(dpt.grad.numpy(), d.grad, rtol=1e-15, atol=1e-20)
+
+
+def test_softmax():
+    a = np.random.random([4, 8])
+    at = nn.Tensor(a)
+    st = nn.softmax(at)
+    st.backward()
+    apt = torch.tensor(a, requires_grad=True)
+    spt = torch.softmax(apt, dim=1)
+    spt.sum().backward()
+    assert np.allclose(st.value, spt.detach().numpy(), rtol=1e-15, atol=1e-15)
+    assert np.allclose(apt.grad.numpy(), at.grad, rtol=1e-15, atol=1e-15)
+
+
+def test_cross_entropy():
+    a = np.random.random([4, 8])
+    y = np.random.randint(0, 8, 4).tolist()
+    at = nn.Tensor(a)
+    st = nn.cross_entropy(nn.softmax(at), y)
+    st.backward()
+    apt = torch.tensor(a, requires_grad=True)
+    ypt = torch.tensor(y, requires_grad=False)
+    spt = torch.nn.functional.cross_entropy(apt, ypt)
+    spt.backward()
+    assert np.allclose(st.value.sum(), spt.detach().numpy(), rtol=1e-15, atol=1e-10)
+    assert np.allclose(apt.grad.numpy(), at.grad, rtol=1e-15, atol=1e-10)

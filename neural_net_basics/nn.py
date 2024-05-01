@@ -228,14 +228,17 @@ class MLP(Module):
 
 
 def softmax(x):
+    assert len(x.value.shape) == 2  # Limit to work for only 2D tensors.
     exps = (x - np.max(x.value, axis=1, keepdims=True)).exp()
-    # TODO grads not calculated right here.
     return exps / exps.sum(axis=1)
 
 
 # Loss
 def cross_entropy(y_hat, y):
-    return -(y_hat.log() * y)
+    num_classes = y_hat.value.shape[1]
+    y_one_hot = np.zeros((len(y), num_classes))
+    y_one_hot[np.arange(len(y)), y] = 1
+    return -(y_hat.log() * y_one_hot) / len(y)
 
 
 class DataLoader:
