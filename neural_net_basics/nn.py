@@ -208,22 +208,29 @@ class Module(abc.ABC):
 class Linear(Module):
     def __init__(self, d_in, d_out):
         super().__init__()
-        self.W = Tensor(np.random.rand(d_in, d_out) / (d_in * d_out))
-        self.b = Tensor(np.random.rand(1, d_out) / d_out)
+        # W_bound = np.sqrt(12 / d_in)
+        W_bound = np.sqrt(6 / d_in)
+        self.W = Tensor(
+            np.random.uniform(low=-W_bound, high=W_bound, size=(d_in, d_out))
+        )
+        b_bound = 1 / np.sqrt(d_in)
+        self.b = Tensor(np.random.uniform(low=-b_bound, high=b_bound, size=(1, d_out)))
 
     def forward(self, x):
         return x.matmul(self.W) + self.b
 
 
 class MLP(Module):
-    def __init__(self, d_in, d_out):
+    def __init__(self, d_in, d_out, d_hidden=128):
         super().__init__()
-        self.linear1 = Linear(d_in, 128)
-        self.linear2 = Linear(128, d_out)
+        self.linear1 = Linear(d_in, d_hidden)
+        self.linear2 = Linear(d_hidden, d_hidden)
+        self.linear3 = Linear(d_hidden, d_out)
 
     def forward(self, x):
         x = self.linear1.forward(x).relu()
-        x = self.linear2.forward(x)
+        x = self.linear2.forward(x)  # .relu()
+        # x = self.linear3.forward(x)
         return softmax(x)
 
 
@@ -239,18 +246,6 @@ def cross_entropy(y_hat, y):
     y_one_hot = np.zeros((len(y), num_classes))
     y_one_hot[np.arange(len(y)), y] = 1
     return -(y_hat.log() * y_one_hot) / len(y)
-
-
-class DataLoader:
-    def __init__(self, data, batch_size=64):
-        self.data = data
-        self.batch_size = batch_size
-        self.index = 0
-
-    def __iter__(self):
-        for i in range(0, len(self.data), self.batch_size):
-            batch = self.data[i : i + self.batch_size]
-            yield (np.array([row[i] for row in batch]) for i in range(len(batch[0])))
 
 
 class Optimizer(abc.ABC):
@@ -272,4 +267,8 @@ class SGD(Optimizer):
 
     def step(self):
         for param in self.parameters:
+            # if param.name == "linear1 W":
+            #     print(param.value)
+            #     print(param.grad)
+            #     print("===========")
             param.value -= param.grad * self.lr

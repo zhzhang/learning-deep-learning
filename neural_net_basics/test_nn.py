@@ -1,5 +1,6 @@
 import nn
 import numpy as np
+import scipy as sp
 import torch
 
 
@@ -207,3 +208,14 @@ def test_cross_entropy():
     spt.backward()
     assert np.allclose(st.value.sum(), spt.detach().numpy(), rtol=1e-15, atol=1e-10)
     assert np.allclose(apt.grad.numpy(), at.grad, rtol=1e-15, atol=1e-10)
+
+
+def test_kaiming_uniform_init():
+    # Determine that the initialization is correct by comparing the distribution of the weights
+    # with a critical value of 0.01.
+    d_in, d_out = 300, 4000
+    l = nn.Linear(d_in, d_out)
+    ltw = torch.zeros((d_out, d_in))
+    torch.nn.init.kaiming_uniform_(ltw, nonlinearity="relu")
+    result = sp.stats.kstest(l.W.value.flatten(), ltw.detach().numpy().flatten())
+    assert result.pvalue > 0.01
